@@ -18,6 +18,7 @@ params.gtf           = '/media/leon/DISK2/icig/Homo_sapiens.GRCh38.113.gtf'
 
 
 process FASTQC {
+    // дописать maxForks и тд
     publishDir "${params.outdir}/QC", mode: 'copy'
 
     input:
@@ -40,7 +41,7 @@ process PREPROCESS {
     
     output:
     tuple val(sample), path("*.trimmed.fastq.gz"), emit: reads
-    path("*.json"), emit: json
+    path("*.json"), emit: json // можно в один канал
     path("*.html"), emit: html
     
     script:
@@ -52,7 +53,7 @@ process PREPROCESS {
         fastp -i ${fastqs[0]} -I ${fastqs[1]} \
             -o ${sample}_1.barcoded.fastq.gz -O tmp.fq.gz \
             --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \
-            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \
+            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \ # почему здесь один бэкслэш а в других процессах два
             --thread ${task.cpus}
         
         ## Attaching barcodes to reverse read headers
@@ -80,7 +81,7 @@ process PREPROCESS {
             -o ${sample}_1.trimmed.fastq.gz -O ${sample}.trimmed.fastq.gz \
             --umi --umi_loc=read1 --umi_len=16 --umi_prefix=CR \
             --length_required 36 --trim_poly_g \
-            -a AAGCAGTGGTATCAACGCAGAGTAC \
+            -a AAGCAGTGGTATCAACGCAGAGTAC \ # сделать mmRNA_adapter параметром
             --thread ${task.cpus} \
             -j ${sample}.json -h ${sample}.html  
         
@@ -101,7 +102,7 @@ process PREPROCESS {
 
 process HISAT2 {
     cpus 30
-    memory '30GB'
+    memory '30GB' // нужно ли ставить ограничение на ram и cpu
     maxForks 1    
     publishDir "${params.outdir}/alignments"
 
@@ -114,7 +115,7 @@ process HISAT2 {
 
     script:
     """
-    splicing_mode="--no-spliced-alignment" 
+    splicing_mode="--no-spliced-alignment" # пусть лучше условие будет вне кавычек (?)
     if [ ${assay_type} == "RNASEQ" ]; then
         splicing_mode=""
     fi
@@ -286,6 +287,7 @@ process BOWTIE2_alt {
 }
 
 // файлы с баркодами лучше считывать в воркфлоу и передавать как path
+// сделать паттерн для аутдир чтобы раскидывать по папкам ref и alt (??)
 process DEMULTIPLEX_BAM {
     publishDir "${params.outdir}/sc_alignments"
 
@@ -374,7 +376,7 @@ workflow rSNPs {
         .map { row -> tuple(row.sample, row.patient) }
     
     // ATAC-seq
-    ATAC_fastqs = Channel.of(50..83)
+    ATAC_fastqs = Channel.of(50..83) // считывать sample_ids из таблицы с метадатой и искать в директории указанной в параметрах
         .map { n -> "SRR140487${n}" }
         .map { sample ->
             def fastq_f = "${params.atac_dir}/${sample}/${sample}_S1_L001_R1_001.fastq.gz"
@@ -448,17 +450,14 @@ workflow rSNPs {
 }
 
 workflow asymmetry_shift {
-    metadata = Channel.fromPath(params.metadata)
-        .flatMap { file -> 
-            file.readLines().drop(1).collect { line ->
-                def (patient, assay_type, condition, sample) = line.split(',')
-                tuple(sample, assay_type)
-            }
-        }
-    fastqs = Channel.fromFilePairs(params.reads)
-        .join(metadata)
+   assay_dct = Channel.fromPath(params.metadata)
+        .splitCsv(header: true)
+        .map { row -> tuple(row.sample, row.assay_type) }
 
-    trimmed_fastqs = FASTP(fastqs).reads
+    fastqs = Channel.fromFilePairs(params.reads)
+        .join(assay_dct)
+
+    trimmed_fastqs = PREPROCESS(fastqs).reads
     FASTQC(trimmed_fastqs)
 
     alignments = HISAT2(trimmed_fastqs).bam
@@ -471,7 +470,7 @@ workflow asymmetry_shift {
     }
     .set { assay }
 
-    rna_alignments = assay.rna.map { sample, bam_path, assay_type -> bam_path }.collect()
+    rna_alignments = assay.rna.map { sample, bam_path, assay_type -> bam_path }.collect() // почему здесь collect а сверху groupTuple
     // chip_alignments = assay.chip.map { sample, bam_path, assay_type -> bam_path }.collect()
     
     FEATURE_COUNTS(rna_alignments)
