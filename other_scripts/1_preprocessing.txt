@@ -1,0 +1,43 @@
+#!/bin/bash
+
+## CELLRANGER-COUNT
+for i in $(seq 0 33); do 
+  cellranger-atac count --id=sample$((i+61)) --fastqs=/media/leon/Masha/ATAC/fastqs/SRR140487$((i+50)) --reference=/media/leon/Masha/ATAC/refdata-cellranger-arc-GRCh38-2020-A-2.0.0 --sample=GSM52033$((i+61)); 
+done
+
+
+## удаление blacklisted-регионов
+cd /media/leon/Masha/ATAC
+wget https://www.encodeproject.org/files/ENCFF356LFX/@@download/ENCFF356LFX.bed.gz
+gunzip ENCFF356LFX.bed.gz
+
+bedtools makewindows -g /media/leon/Masha/ATAC/refdata-cellranger-arc-GRCh38-2020-A-2.0.0/!!!!!!!!.fa.fai -w 5000 > windows.bed
+bedtools subtract -a windows.bed -b /media/leon/Masha/ATAC/ENCFF356LFX.bed > filtered_windows.bed
+
+
+## reads with MAPQ < 30, secondary or unmapped reads, and duplicate reads
+for i in $(seq 61 94)
+do
+
+cd /media/leon/Masha/ATAC/sample${i}/outs
+samtools view -b -F 4 -F 256 -q 30 possorted_bam.bam | samtools sort -n -o filtered_sorted.bam -
+samtools fixmate -m filtered_sorted.bam - | samtools sort -o - | samtools markdup -r - markduped.bam
+
+rm filtered_sorted.bam 
+samtools index markduped.bam
+samtools view -b -L ../../filtered_windows.bed markduped.bam > filtered_${i}.bam
+rm markduped.bam
+
+done
+
+
+#samtools merge -o /media/leon/Masha/ATAC/merged.bam /media/leon/Masha/ATAC/sample*/filtered*bam
+
+#macs2 callpeak -t  /media/leon/Masha/ATAC/merged.bam --nomodel --extsize 200 --shift 0 --keep-dup all -q 0.05
+
+#awk 'OFS="\t" {print $1"."$2+1"."$3, $1, $2+1, $3, "."}' NA_peaks.narrowPeak > peaks.saf
+
+
+#mkdir feature_counts
+#for i in $(seq 61 94); do cd /media/leon/Masha/ATAC/sample${i}/outs; featureCounts -a /media/leon/Masha/ATAC/peaks.saf -F SAF -o ../../feature_counts/counts_${i}.txt -p output.bam; done
+

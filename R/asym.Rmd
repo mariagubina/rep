@@ -1,0 +1,520 @@
+---
+title: "AS_genes"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+date: "2025-02-03"
+---
+
+```{r message=FALSE, warning=FALSE}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(readr)
+library(stringr)
+library(dplyr)
+library(VennDiagram)
+library(grid)
+library(ggplot2)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+hg38 <- TxDb.Hsapiens.UCSC.hg38.knownGene
+exns <- exons(hg38, columns = c("exon_id", "gene_id"))
+prmtrs <- promoters(hg38, columns = c("gene_id"))
+
+metadata <- read.csv("/media/leon/DISK2/icig/done/nextflow/in_vivo_metadata.csv")
+
+patients <- unique(metadata$patient)
+# patients <- setdiff(patients, c("s2"))
+# conditions <- unique(metadata$condition)
+patients
+```
+
+
+```{r}
+ASE_genes_no_30 <- function(patient, pvalue = 0.1, min_DP = 100) {
+  stats0R <- read_delim(paste0(patient, "_0R.stat"), delim = "\t", trim_ws = TRUE) %>%
+    filter(DP_total >= min_DP)
+  stats1R <- read_delim(paste0(patient, "_1R.stat"), delim = "\t", trim_ws = TRUE) %>%
+    filter(DP_total >= min_DP)
+  stats90R <- read_delim(paste0(patient, "_90R.stat"), delim = "\t", trim_ws = TRUE) %>%
+    filter(DP_total >= min_DP)
+  
+  stats <- merge(stats0R, stats1R, by = c(2, 3))
+  stats <- merge(stats, stats90R, by.x = c(1, 2), by.y = c(2, 3))
+  
+  colnames(stats) <- c("chr", "pos", "id_sample_0R", "DP_0R", "ref_0R", "QS_ref_0R", "alt1_0R", "QS_alt1_0R", "alt2_0R", "QS_alt2_0R", "id_sample_1R", "DP_1R", "ref_1R", "QS_ref_1R", "alt1_1R", "QS_alt1_1R", "alt2_1R", "QS_alt2_1R", "id_sample_90R", "DP_90R", "ref_90R", "QS_ref_90R", "alt1_90R", "QS_alt1_90R", "alt2_90R", "QS_alt2_90R")
+  
+  stats <- stats[str_length(stats$ref_0R) == 1,]
+  stats <- stats[str_length(stats$alt1_0R) == 1,]
+  stats <- stats[str_length(stats$alt1_1R) == 1,]
+  stats <- stats[str_length(stats$alt1_90R) == 1,]
+  
+  stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 15, 16, 17, 18)] <- stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 17, 18, 15, 16)]
+  stats[stats$alt1_0R != stats$alt1_90R, c(7, 8, 9, 10, 23, 24, 25, 26)] <- stats[stats$alt1_0R != stats$alt1_90R, c(7, 8, 9, 10, 25, 26, 23, 24)]
+  
+  stats$p01 <- apply(stats[, c(4, 6, 8, 12, 14, 16)], 1, function(x) {
+    data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+    v <- chisq.test(data_matrix)
+    return(v$p.value)
+  })
+  stats$p90 <- apply(stats[, c(4, 6, 8, 20, 22, 24)], 1, function(x) {
+    data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+    v <- chisq.test(data_matrix)
+    return(v$p.value)
+  })
+  
+  stats$p01adj <- p.adjust(stats$p01, method = "BH")
+  stats$p90adj <- p.adjust(stats$p90, method = "BH")
+  
+  stats <- stats[apply(stats[, c(28, 29, 30)], 1, max) < pvalue, ]
+  stats <- na.omit(stats)
+  
+  gr_positions <- GRanges(
+    seqnames = paste0("chr", stats$chr),
+    ranges = IRanges(start = stats$pos, end = stats$pos + 1)
+  )
+  
+  overlaps <- findOverlaps(gr_positions, exns)
+  stats <- stats[queryHits(overlaps), ]
+  snp_exons <- exns[subjectHits(overlaps)]
+  gene_ids <- sapply(snp_exons$gene_id, function(x) ifelse(length(x) == 0, NA, unlist(x)))
+  stats$gene_id <- gene_ids
+  stats <- unique(stats)
+  stats <- na.omit(stats)
+  
+  gene_names <- AnnotationDbi::select(org.Hs.eg.db, keys = as.character(stats$gene_id), columns = "GENENAME", keytype = "ENTREZID")
+  
+  stats <- merge(stats, gene_names, by.x="gene_id", by.y=1)
+  stats <- unique(stats)
+  return(stats)
+}
+```
+
+
+```{r}
+ASE_genes <- function(patient, pvalue = 0.1, min_DP = 100) {
+  if (patient %in% c("s2", "s10")) { return(ASE_genes_no_30(patient, pvalue, min_DP)) }
+  else {
+    stats0R <- read_delim(paste0(patient, "_0R.stat"), delim = "\t", trim_ws = TRUE) %>%
+      filter(DP_total >= min_DP)
+    stats1R <- read_delim(paste0(patient, "_1R.stat"), delim = "\t", trim_ws = TRUE) %>%
+      filter(DP_total >= min_DP)
+    stats30R <- read_delim(paste0(patient, "_30R.stat"), delim = "\t", trim_ws = TRUE) %>%
+      filter(DP_total >= min_DP)
+    stats90R <- read_delim(paste0(patient, "_90R.stat"), delim = "\t", trim_ws = TRUE) %>%
+      filter(DP_total >= min_DP)
+    
+    stats <- merge(stats0R, stats1R, by = c(2, 3))
+    stats <- merge(stats, stats30R, by.x = c(1, 2), by.y = c(2, 3))
+    stats <- merge(stats, stats90R, by.x = c(1, 2), by.y = c(2, 3))
+    
+    colnames(stats) <- c("chr", "pos", "id_sample_0R", "DP_0R", "ref_0R", "QS_ref_0R", "alt1_0R", "QS_alt1_0R", "alt2_0R", "QS_alt2_0R", "id_sample_1R", "DP_1R", "ref_1R", "QS_ref_1R", "alt1_1R", "QS_alt1_1R", "alt2_1R", "QS_alt2_1R", "id_sample_30R", "DP_30R", "ref_30R", "QS_ref_30R", "alt1_30R", "QS_alt1_30R", "alt2_30R", "QS_alt2_30R", "id_sample_90R", "DP_90R", "ref_90R", "QS_ref_90R", "alt1_90R", "QS_alt1_90R", "alt2_90R", "QS_alt2_90R")
+    
+    stats <- stats[str_length(stats$ref_0R) == 1,]
+    stats <- stats[str_length(stats$alt1_0R) == 1,]
+    stats <- stats[str_length(stats$alt1_1R) == 1,]
+    stats <- stats[str_length(stats$alt1_30R) == 1,]
+    stats <- stats[str_length(stats$alt1_90R) == 1,]
+    
+    stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 15, 16, 17, 18)] <- stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 17, 18, 15, 16)]
+    stats[stats$alt1_0R != stats$alt1_30R, c(7, 8, 9, 10, 23, 24, 25, 26)] <- stats[stats$alt1_0R != stats$alt1_30R, c(7, 8, 9, 10, 25, 26, 23, 24)]
+    stats[stats$alt1_0R != stats$alt1_90R, c(7, 8, 9, 10, 31:34)] <- stats[stats$alt1_0R != stats$alt1_90R, c(7, 8, 9, 10, 33, 34, 31, 32)]
+    
+    stats$p01 <- apply(stats[, c(4, 6, 8, 12, 14, 16)], 1, function(x) {
+      data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+      v <- chisq.test(data_matrix)
+      return(v$p.value)
+    })
+    stats$p30 <- apply(stats[, c(4, 6, 8, 20, 22, 24)], 1, function(x) {
+      data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+      v <- chisq.test(data_matrix)
+      return(v$p.value)
+    })
+    stats$p90 <- apply(stats[, c(4, 6, 8, 28, 30, 32)], 1, function(x) {
+      data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+      v <- chisq.test(data_matrix)
+      return(v$p.value)
+    })
+  
+    
+    stats$p01adj <- p.adjust(stats$p01, method = "BH")
+    stats$p30adj <- p.adjust(stats$p30, method = "BH")
+    stats$p90adj <- p.adjust(stats$p90, method = "BH")
+    
+    stats <- stats[apply(stats[, c(38, 39, 40)], 1, max) < pvalue, ]
+    stats <- na.omit(stats)
+    
+    gr_positions <- GRanges(
+      seqnames = paste0("chr", stats$chr),
+      ranges = IRanges(start = stats$pos, end = stats$pos + 1)
+    )
+    
+    overlaps <- findOverlaps(gr_positions, exns)
+    stats <- stats[queryHits(overlaps), ]
+    snp_exons <- exns[subjectHits(overlaps)]
+    gene_ids <- sapply(snp_exons$gene_id, function(x) ifelse(length(x) == 0, NA, unlist(x)))
+    stats$gene_id <- gene_ids
+    stats <- unique(stats)
+    stats <- na.omit(stats)
+    
+    gene_names <- AnnotationDbi::select(org.Hs.eg.db, keys = as.character(stats$gene_id), columns = "GENENAME", keytype = "ENTREZID")
+    
+    stats <- merge(stats, gene_names, by.x="gene_id", by.y=1)
+    stats <- unique(stats)
+    return(stats)
+  }
+}
+```
+
+
+```{r}
+ASB_genes <- function(patient, pvalue = 0.1, min_DP = 50) {
+  if (!is.na(as.numeric(substr(patient, 2, 3)))) {
+    stats0C <- read_delim(paste0(patient, "_0C.stat"), delim = "\t", trim_ws = TRUE) %>%
+      filter(DP_total >= min_DP)
+    stats1C <- read_delim(paste0(patient, "_1C.stat"), delim = "\t", trim_ws = TRUE) %>% 
+      filter(DP_total >= min_DP)
+  } else {
+    stats0C <- read_delim(paste0(patient, "_DC.stat"), delim = "\t", trim_ws = TRUE) %>% 
+      filter(DP_total >= min_DP)
+    stats1C <- read_delim(paste0(patient, "_EC.stat"), delim = "\t", trim_ws = TRUE) %>% 
+      filter(DP_total >= min_DP)
+}
+  stats <- merge(stats0C, stats1C, by = c(2, 3))
+ 
+  colnames(stats) <- c("chr", "pos", "id_sample_0C", "DP_0C", "ref_0C", "QS_ref_0C", "alt1_0C", "QS_alt1_0C", "alt2_0C", "QS_alt2_0C", "id_sample_1C", "DP_1C", "ref_1C", "QS_ref_1C", "alt1_1C", "QS_alt1_1C", "alt2_1C", "QS_alt2_1C")
+  
+  stats <- stats[str_length(stats$ref_0C) == 1,]
+  stats <- stats[str_length(stats$alt1_0C) == 1,]
+  stats <- stats[str_length(stats$ref_1C) == 1,]
+  stats <- stats[str_length(stats$alt1_1C) == 1,]
+
+  stats[stats$alt1_0C != stats$alt1_1C, c(7, 8, 9, 10, 15, 16, 17, 18)] <- stats[stats$alt1_0C != stats$alt1_1C, c(7, 8, 9, 10, 17, 18, 15, 16)]
+
+  stats$p01 <- apply(stats[, c(4, 6, 8, 12, 14, 16)], 1, function(x) {
+    data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+    v <- chisq.test(data_matrix)
+    return(v$p.value)
+  })
+
+  stats$p01adj <- p.adjust(stats$p01, method = "BH")
+  stats <- stats[stats$p01adj < pvalue, ]
+  stats <- na.omit(stats)
+
+  gr_positions <- GRanges(
+    seqnames = paste0("chr", stats$chr),
+    ranges = IRanges(start = stats$pos, end = stats$pos + 1)
+  )
+  
+  overlaps <- findOverlaps(gr_positions, prmtrs)
+  stats <- stats[queryHits(overlaps), ]
+  snp_prmtrs <- prmtrs[subjectHits(overlaps)]
+  gene_ids <- sapply(snp_prmtrs$gene_id, function(x) ifelse(length(x) == 0, NA, unlist(x)))
+  stats$gene_id <- gene_ids
+  stats <- unique(stats)
+  stats <- na.omit(stats)
+  
+  gene_names <- AnnotationDbi::select(org.Hs.eg.db, keys = as.character(stats$gene_id), columns = "GENENAME", keytype = "ENTREZID")
+  
+  stats <- merge(stats, gene_names, by.x=21, by.y=1)
+  stats <- unique(stats)
+  return(stats)
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ase_s1_snps <- ASE_genes("s1")
+ase_s1_snps
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ase_s1 <- distinct(ASE_genes("s1", 0.1), gene_id, .keep_all = TRUE)
+ase_s7 <- distinct(ASE_genes("s7", 0.01), gene_id, .keep_all = TRUE)
+
+A <- na.omit(ase_s1$gene_id)
+B <- na.omit(ase_s7$gene_id)
+
+genein <- intersect(A, B)
+intersection_size <- length(genein)
+
+venn.plot <- venn.diagram(
+  x = list(A = A, B = B),
+  category.names = c("s1", "s7"),
+  filename = NULL,
+  fill = c("blue", "red"),
+  alpha = 0.5,
+  label.col = "black",
+  cex = 2,
+  cat.col = c("blue", "red"),
+  cat.cex = 2,
+  cat.pos = 0,
+  cat.dist = c(0.025, 0.025),
+  lwd = 2
+  )
+
+grid.newpage()
+grid.draw(venn.plot)
+```
+
+
+```{r}
+gene_names_iv <- AnnotationDbi::select(org.Hs.eg.db,
+                                       keys = genein,
+                                       columns = "GENENAME",
+                                       keytype = "ENTREZID")
+gene_names_iv
+```
+
+# 15 in vivo RNA-seq образцов
+```{r message=FALSE, warning=FALSE}
+ase_results <- lapply(patients, function(x) {
+  distinct(ASE_genes(x), gene_id, .keep_all = TRUE)
+})
+
+ase_results[[1]][c("id_sample_0R", "gene_id", "GENENAME")]
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ase_gene_ids <- lapply(ase_results, function(df) df$gene_id)
+ase_gene_count = sapply(ase_gene_ids, length)
+names(ase_gene_count) <- patients
+ase_gene_count
+```
+
+
+```{r}
+common_ase_genes <- Reduce(intersect, ase_gene_ids)
+print(length(common_ase_genes))
+ase_results[[1]][ase_results[[1]]$gene_id == common_ase_genes[1], ][["GENENAME"]]
+```
+
+
+```{r}
+gene_counts <- table(unlist(ase_gene_ids))
+frequent_genes <- names(gene_counts[gene_counts >= 7])
+fr_gene_names <- AnnotationDbi::select(org.Hs.eg.db,
+                                       keys = frequent_genes,
+                                       columns = "GENENAME",
+                                       keytype = "ENTREZID")
+fr_gene_names
+```
+
+
+```{r}
+gene_counts_df <- as.data.frame(gene_counts)
+colnames(gene_counts_df) <- c("Gene", "Count")
+
+ggplot(gene_counts_df, aes(x = Count)) +
+  geom_histogram(binwidth = 1, fill = "#69b3a2", color = "black") +
+  labs(
+    title = "Distribution of genes with ASE across samples",
+    x = "Number of samples containing the gene",
+    y = "Number of genes"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+# Два in vivo ChIP-seq образца
+```{r message=FALSE, warning=FALSE}
+asb_results <- lapply(c("s1", "s7"), function(x) {
+  distinct(ASB_genes(x), gene_id, .keep_all = TRUE)
+})
+asb_gene_ids <- lapply(asb_results, function(df) df$gene_id)
+print(nrow(asb_results[[1]]))
+print(nrow(asb_results[[2]]))
+
+common_asb_genes <- Reduce(intersect, asb_gene_ids)
+length(common_asb_genes)
+```
+
+
+```{r}
+go_enrich <- enrichGO(gene = common_asb_genes,
+                      OrgDb = org.Hs.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "BP",
+                      pAdjustMethod = "BH",
+                      qvalueCutoff = 0.01,
+                      readable = TRUE)
+as.data.frame(go_enrich)
+```
+
+
+```{r}
+kegg_enrich <- enrichKEGG(gene = common_asb_genes,
+                          organism = "hsa",
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.1)
+as.data.frame(kegg_enrich)
+```
+
+
+# Три in vitro ChIP-seq образца
+```{r message=FALSE, warning=FALSE}
+in_vitro_patients <- c("sBn", "sDm", "sKh")
+in_vitro_asb_results <- lapply(in_vitro_patients, function(x) {
+  distinct(ASB_genes(x), gene_id, .keep_all = TRUE)
+})
+nrows <- sapply(in_vitro_asb_results, nrow)
+names(nrows) <- in_vitro_patients
+nrows
+```
+
+
+```{r}
+A <- na.omit(in_vitro_asb_results[[1]]$gene_id)
+B <- na.omit(in_vitro_asb_results[[2]]$gene_id)
+C <- na.omit(in_vitro_asb_results[[3]]$gene_id)
+
+# Intersection
+genein <- intersect(A, B)
+genein <- intersect(genein, C)
+intersection_size <- length(genein)
+
+# Create Venn diagram
+venn.plot <- venn.diagram(
+  x = list(A = A, B = B, C = C),
+  category.names = c("sBn", "sDm", "sKh"),
+  filename = NULL,
+  fill = c("#134b70", "#850025", "#ee9923"), # Custom colors
+  alpha = 0.5,  # Slightly more transparent
+  label.col = "black",  # Label color
+  cex = 1.4,  # Text size for labels
+  main.fontfamily = "sans", fontfamily = "sans", cat.fontfamily = "sans", main.fontface = "bold", cat.fontface = "bold", 
+  cat.cex = 1.1,  # Text size for category names
+  lwd = 1.5,  # Line width
+  cat.dist = c(0.05, 0.05, 0.05),  # Adjust category label positioning
+  main = "Number of genes with ASB shift",  # Title for the diagram
+  main.cex = 1.2,  # Title text size
+  cat.col = c("#134b70", "#850025", "#ee9923"), # Category name colors match the fill
+  euler.d = TRUE, scaled = TRUE  # Scale circles according to set sizes ## ????
+)
+
+grid.newpage()
+grid.draw(venn.plot)
+```
+
+
+```{r}
+# install.packages("eulerr")
+library(eulerr)
+fit <- euler(c(sBn=107, sDm=157, sKh=249, "sBn&sDm"=6, "sBn&sKh"=24, "sDm&sKh"=30, "sBn&sDm&sKh"=10))
+plot(fit, fills = list(fill = c("#134b70", "#850025", "#ee9923"), alpha = 0.5), quantities = list(fontsize = 10))
+```
+
+
+```{r}
+go_enrich <- enrichGO(gene = genein,
+                      OrgDb = org.Hs.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "BP",
+                      pAdjustMethod = "BH",
+                      qvalueCutoff = 0.01,
+                      readable = TRUE)
+as.data.frame(go_enrich)
+```
+
+
+```{r}
+kegg_enrich <- enrichKEGG(gene = genein,
+                          organism = "hsa",
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.1)
+as.data.frame(kegg_enrich)
+```
+
+# Один in vitro RNA-seq образец
+```{r}
+ASE_in_vitro <- function(patient, pvalue = 0.1) {
+  stats0R <- read_delim(paste0(patient, "_DR.stat"), delim = "\t", trim_ws = TRUE) %>%
+    filter(DP_total >= 100)
+  stats1R <- read_delim(paste0(patient, "_ER.stat"), delim = "\t", trim_ws = TRUE) %>%
+    filter(DP_total >= 100)
+  
+  stats <- merge(stats0R, stats1R, by = c(2, 3))
+  
+  colnames(stats) <- c("chr", "pos", "id_sample_0R", "DP_0R", "ref_0R", "QS_ref_0R", "alt1_0R", "QS_alt1_0R", "alt2_0R", "QS_alt2_0R", "id_sample_1R", "DP_1R", "ref_1R", "QS_ref_1R", "alt1_1R", "QS_alt1_1R", "alt2_1R", "QS_alt2_1R")
+  
+  stats <- stats[str_length(stats$ref_0R) == 1,]
+  stats <- stats[str_length(stats$alt1_0R) == 1,]
+  stats <- stats[str_length(stats$alt1_1R) == 1,]
+  
+  stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 15, 16, 17, 18)] <- stats[stats$alt1_0R != stats$alt1_1R, c(7, 8, 9, 10, 17, 18, 15, 16)]
+  
+  stats$p01 <-  apply(stats[, c(4, 6, 8, 12, 14, 16)], 1, function(x) {
+    data_matrix <- matrix(unlist(c(round(x[1] * x[2]), round(x[1] * x[3]), round(x[4] * x[5]), round(x[4] * x[6]))), nrow = 2, byrow = TRUE)
+    v <- chisq.test(data_matrix)
+  return(v$p.value)
+  })
+
+  stats$p01adj <- p.adjust(stats$p01, method = "BH")
+  stats <- stats[stats$p01adj < pvalue, ]
+
+  stats <- na.omit(stats)
+  
+  gr_positions <- GRanges(
+    seqnames = paste0("chr", stats$chr),
+    ranges = IRanges(start = stats$pos, end = stats$pos + 1)
+  )
+  
+  overlaps <- findOverlaps(gr_positions, exns)
+  stats <- stats[queryHits(overlaps), ]
+  snp_exons <- exns[subjectHits(overlaps)]
+  gene_ids <- sapply(snp_exons$gene_id, function(x) ifelse(length(x) == 0, NA, unlist(x)))
+  stats$gene_id <- gene_ids
+  stats <- unique(stats)
+  stats <- na.omit(stats)
+  
+  gene_names <- AnnotationDbi::select(org.Hs.eg.db, keys = as.character(stats$gene_id), columns = "GENENAME", keytype = "ENTREZID")
+  
+  stats <- merge(stats, gene_names, by.x=21, by.y=1)
+  stats <- unique(stats)
+  return(stats)
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+sAn_ASE <- distinct(ASE_in_vitro("sAn"), gene_id, .keep_all = TRUE)
+sAn_ASE_001 <- distinct(ASE_in_vitro("sAn", 0.01), gene_id, .keep_all = TRUE)
+x <- sAn_ASE$gene_id
+y <- sAn_ASE_001$gene_id
+print(length(x))
+print(length(y))
+```
+
+
+```{r}
+go_enrich <- enrichGO(gene = x,
+                      OrgDb = org.Hs.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "BP",
+                      pAdjustMethod = "BH",
+                      qvalueCutoff = 0.01,
+                      readable = TRUE)
+as.data.frame(go_enrich)
+```
+
+
+```{r}
+kegg_enrich <- enrichKEGG(gene = y,
+                          organism = "hsa",
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.1)
+as.data.frame(kegg_enrich)
+```
+

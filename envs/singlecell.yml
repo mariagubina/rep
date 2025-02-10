@@ -1,0 +1,15 @@
+name: singlecell
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bioconda::fastqc=0.11.9
+  - bioconda::fastp=0.20.1
+  - bioconda::bowtie2=2.4.2
+  - bioconda::samtools=1.21
+  - bioconda::bcftools=1.21
+  - conda-forge::python=3.12.7
+  - conda-forge::perl=5.32.1
+  - bioconda::hisat2=2.2.1
+  - bioconda::subread=2.0.1

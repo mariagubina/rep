@@ -1,0 +1,478 @@
+
+```{r}
+install.packages('hdf5r')
+install.packages('Signac')
+install.packages('Seurat')
+install.packages('harmony')
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("EnsDb.Hsapiens.v86")
+BiocManager::install("GenomeInfoDb")
+BiocManager::install("biovizBase")
+BiocManager::install("GenomicRanges")
+BiocManager::install("Rsamtools")
+```
+
+```{r}
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Hsapiens.v86)
+library(harmony)
+library(GenomicRanges)
+library(SeuratData)
+library(SeuratDisk)
+library(Matrix)
+```
+
+```{r}
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "hg38"
+```
+
+```{r}
+peaks.all <- read.table(
+  file = "/media/leon/Masha/ATAC/aggr/outs/filtered_peak_bc_matrix/peaks.bed",
+  col.names = c("chr", "start", "end")
+)
+peaks.all <- makeGRangesFromDataFrame(peaks.all)
+
+
+peaks.flt <- read.table(
+  file = "/media/leon/Masha/ATAC/aggr/outs/filtered_peak_bc_matrix/filtered_peaks.bed",
+  col.names = c("chr", "start", "end")
+)
+peaks.flt <- makeGRangesFromDataFrame(peaks.flt)
+```
+
+QC
+```{r}
+counts <- Read10X_h5(filename = '/media/leon/Masha/ATAC/CR_output/sample94/outs/filtered_peak_bc_matrix.h5')
+
+metadata <- read.csv(
+  file = '/media/leon/Masha/ATAC/CR_output/sample94/outs/singlecell.csv',
+  header = TRUE,
+  row.names = 1
+)
+
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  fragments = '/media/leon/Masha/ATAC/CR_output/sample94/outs/fragments.tsv.gz',
+  min.cells = 0,
+  min.features = 500
+)
+
+data <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata
+)
+
+Annotation(data) <- annotations
+
+data <- NucleosomeSignal(object = data)
+data <- TSSEnrichment(object = data, fast = T)
+
+data$frac_reads_in_peaks <- data$peak_region_fragments / data$passed_filters
+data$frac_mito_reads <- data$mitochondrial / data$total
+
+data$blacklist_fraction <- FractionCountsInRegion(
+  object = data,
+  assay = 'peaks',
+  regions = blacklist_hg38
+)
+```
+
+```{r}
+DensityScatter(data, x = 'nCount_peaks', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+```
+
+```{r}
+VlnPlot(
+  object = data,
+  features = c('nCount_peaks', 'TSS.enrichment', 'nucleosome_signal',
+               'frac_reads_in_peaks', 'blacklist_fraction', 'frac_mito_reads'),
+  pt.size = 0.1,
+  ncol = 6
+)
+```
+
+```{r}
+hist(data$frac_reads_in_peaks)
+```
+
+
+```{r}
+low_peaks <- quantile(data[["frac_reads_in_peaks"]]$frac_reads_in_peaks, probs = 0.05)
+high_peaks <- quantile(data[["frac_reads_in_peaks"]]$frac_reads_in_peaks, probs = 0.99)
+
+high_count <- quantile(data[["nCount_peaks"]]$nCount_peaks, probs = 0.99)
+
+low_tss <- quantile(data[["TSS.enrichment"]]$TSS.enrichment, probs = 0.02)
+high_tss <- quantile(data[["TSS.enrichment"]]$TSS.enrichment, probs = 0.99)
+
+high_ns <- quantile(data[["nucleosome_signal"]]$nucleosome_signal, probs = 0.99)
+
+high_mt <- quantile(data[["frac_mito_reads"]]$frac_mito_reads, probs = 0.97)
+
+high_bl <- quantile(data[["blacklist_fraction"]]$blacklist_fraction, probs = 0.99)
+```
+
+```{r}
+print(data)
+
+data <- subset(
+  x = data,
+  subset = nCount_peaks > 1000 &
+    nCount_peaks < high_count &
+    frac_reads_in_peaks > low_peaks &
+    frac_reads_in_peaks < high_peaks &
+    TSS.enrichment > low_tss &
+    nucleosome_signal < high_ns &
+    frac_mito_reads < high_mt &
+    blacklist_fraction < high_bl
+)
+
+print(data)
+```
+
+```{r}
+data
+```
+
+```{r}
+qc <- function(sample){
+  sample <- as.character(sample + 60)  
+  
+  counts <- Read10X_h5(filename = paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/filtered_peak_bc_matrix.h5'))
+
+  metadata <- read.table(
+    file = paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/singlecell.csv'),
+    stringsAsFactors = FALSE,
+    sep = ",",
+    header = TRUE,
+    row.names = 1
+  )[-1, ]
+  
+  chrom_assay <- CreateChromatinAssay(
+    counts = counts,
+    sep = c(":", "-"),
+    fragments = paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/fragments.tsv.gz'),
+    min.cells = 0,
+    min.features = 500
+  )
+
+  data <- CreateSeuratObject(
+    counts = chrom_assay,
+    assay = "peaks",
+    meta.data = metadata
+  )
+
+  Annotation(data) <- annotations
+  
+  data <- NucleosomeSignal(object = data)
+  data <- TSSEnrichment(object = data, fast = T)
+  data$frac_reads_in_peaks <- data$peak_region_fragments / data$passed_filters
+  data$frac_mito_reads <- data$mitochondrial / data$total
+
+  data$blacklist_fraction <- FractionCountsInRegion(
+    object = data,
+    assay = 'peaks',
+    regions = blacklist_hg38
+  )
+  
+  high_peaks <- quantile(data[["frac_reads_in_peaks"]]$frac_reads_in_peaks, probs = 0.99)
+  high_count <- quantile(data[["nCount_peaks"]]$nCount_peaks, probs = 0.99)
+  low_tss <- quantile(data[["TSS.enrichment"]]$TSS.enrichment, probs = 0.02)
+  high_tss <- quantile(data[["TSS.enrichment"]]$TSS.enrichment, probs = 0.99)
+  high_ns <- quantile(data[["nucleosome_signal"]]$nucleosome_signal, probs = 0.99)
+  high_mt <- quantile(data[["frac_mito_reads"]]$frac_mito_reads, probs = 0.95)
+  
+  cell_number <- dim(data)[2]
+  data <- subset(
+    x = data,
+    subset = nCount_peaks > 1000 &
+      nCount_peaks < high_count &
+      frac_reads_in_peaks > 0.2 &
+      frac_reads_in_peaks < high_peaks &
+      TSS.enrichment > low_tss &
+      nucleosome_signal < high_ns &
+      frac_mito_reads < high_mt &
+      blacklist_fraction < 0.05
+  )
+  
+  filtered_cells <- paste0(colnames(data), '-', i)
+  writeLines(filtered_cells, paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/signac_qc.txt'))
+  print(paste(i, cell_number, dim(data)[2], round(low_peaks, 2), round(high_mt, 2)))
+  return(filtered_cells)
+}
+```
+
+```{r}
+all_cells <- c()
+
+for (i in 1:34) {
+ cells <- qc(i)
+ all_cells <- c(all_cells, cells)
+}
+
+print(length(all_cells))
+writeLines(all_cells, '/media/leon/Masha/ATAC/signac_qc.txt')
+```
+
+merged normalized
+```{r}
+counts <- Read10X_h5(filename = '/media/leon/Masha/ATAC/aggr/outs/filtered_peak_bc_matrix.h5')
+
+metadata <- read.csv(
+  file = '/media/leon/Masha/ATAC/aggr/outs/singlecell.csv',
+  header = TRUE,
+  row.names = 1)
+
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  genome = 'hg38',
+  fragments = '/media/leon/Masha/ATAC/aggr/outs/fragments.tsv.gz',
+  min.cells = 0,
+  min.features = 500
+)
+
+data <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata
+)
+
+bed_data <- read.table("/media/leon/Masha/ATAC/aggr/outs/filtered_peak_bc_matrix/filtered_peaks.bed", header = FALSE, sep="\t", stringsAsFactors=FALSE)
+
+peak_ids <- paste0(bed_data$V1, "-", bed_data$V2, "-", bed_data$V3)
+
+barcodes = readLines('/media/leon/Masha/ATAC/qc.txt')
+
+data <- subset(data, cells = barcodes)
+data <- data[peak_ids, ]
+
+Annotation(data) <- annotations
+
+data <- RunTFIDF(data)
+data <- FindTopFeatures(data, min.cutoff = 'q75')
+data <- RunSVD(data)
+DepthCor(data)
+```
+
+```{r}
+DefaultAssay(data) <- 'peaks'
+data <- RunUMAP(object = data, reduction = 'lsi', dims = 2:30)
+data <- FindNeighbors(object = data, reduction = 'lsi', dims = 2:30)
+data <- FindClusters(object = data, verbose = FALSE, algorithm = 3, resolution = 1)
+DimPlot(object = data, label = TRUE, raster=FALSE) + NoLegend()
+```
+
+```{r}
+data$sample <- sub(".*-(.*)$", "\\1", rownames(data[[]]))
+
+ND <- c('29', '33', '4', '5', '9', '11', '17', '19', '22', '25', '28')
+PRET2D <- c('31', '8', '13', '14', '15', '20', '23', '26')
+T2D <- c('30', '32', '34', '1', '2', '3', '6', '7', '10', '12', '16', '18', '21', '24', '27')
+
+data$condition <- ifelse(data$sample %in% ND, 'ND', 
+                   ifelse(data$sample %in% PRET2D, 'PRET2D', 'T2D'))
+data[[]]
+```
+
+```{r}
+DimPlot(object = data, group.by = "sample", raster = F) + NoLegend()
+```
+```{r}
+data[[]]
+table(data@meta.data$seurat_clusters)
+```
+```{r}
+DimPlot(object = data, label = TRUE, raster = FALSE, group.by = "seurat_clusters", cells.highlight = list(rownames(data[[]][data$seurat_clusters == "8",]), rownames(data[[]][data$seurat_clusters == "9",]), rownames(data[[]][data$seurat_clusters == "10",])), cols.highlight = c('blue', 'green', 'red')) + NoLegend()
+```
+
+
+```{r}
+gene.activities <- GeneActivity(data)
+
+data[['RNA']] <- CreateAssayObject(counts = gene.activities)
+
+data <- NormalizeData(
+  object = data,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(data$nCount_RNA)
+)
+
+DefaultAssay(data) <- 'RNA'
+
+FeaturePlot(
+  object = data,
+  features = c('GCG', 'INS', 'SST', 'PPY', 'REG1A', 'CFTR', 'PDGFRB', 'CLEC14A', 'CCL3'),
+  max.cutoff = 'q95',
+  raster = F
+)
+```
+
+```{r}
+mat <- GetAssayData(object = data, assay = "RNA", slot = "counts")
+
+writeMM(mat, "rna_matrix.mtx")
+writeLines(rownames(mat), 'genes.txt')
+writeLines(colnames(mat), 'cells.txt')
+```
+
+raw merged
+```{r}
+import_atac <- function(sample){
+
+  sample <- as.character(sample + 60)  
+    
+  metadata <- read.table(
+    file = paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/singlecell.csv'),
+    stringsAsFactors = FALSE,
+    sep = ",",
+    header = TRUE,
+    row.names = 1
+  )[-1, ]
+  
+  frags <- CreateFragmentObject(
+    path = paste0('/media/leon/Masha/ATAC/CR_output/sample', sample, '/outs/fragments.tsv.gz'),
+    cells = rownames(metadata),
+    validate.fragments = F
+  )
+
+  counts <- FeatureMatrix(
+    fragments = frags,
+    features = peaks.all,
+    cells = rownames(metadata)
+  )
+
+  chrom_assay <- CreateChromatinAssay(
+    counts, fragments = frags
+  )
+  
+  data <- CreateSeuratObject(
+    chrom_assay,
+    assay = "peaks",
+    meta.data = metadata
+  )
+  
+  Annotation(data) <- annotations
+  
+  return(data)
+}
+```
+
+```{r}
+JYH792 <- import_atac(29); M110 <- import_atac(33); MM123 <- import_atac(4); MM124 <- import_atac(5); MM56 <- import_atac(9); MM59 <- import_atac(11); MM80 <- import_atac(17); MM86 <- import_atac(19); MM89 <- import_atac(22); MM95 <- import_atac(25); MM98 <- import_atac(28); MM108 <- import_atac(31); MM55 <- import_atac(8); MM61 <- import_atac(13); MM77 <- import_atac(14); MM78 <- import_atac(15); MM87 <- import_atac(20); MM93 <- import_atac(23); MM96 <- import_atac(26); JYH809 <- import_atac(30); MM109 <- import_atac(32); MM12 <- import_atac(34); MM120 <- import_atac(1); MM121 <- import_atac(2); MM122 <- import_atac(3); MM51 <- import_atac(6); MM54 <- import_atac(7); MM57 <- import_atac(10); MM60 <- import_atac(12); MM79 <- import_atac(16); MM81 <- import_atac(18); MM88 <- import_atac(21); MM94 <- import_atac(24); MM97 <- import_atac(27)
+```
+
+```{r}
+MM120$dataset <- "MM120"; MM121$dataset <- "MM121"; MM122$dataset <- "MM122"; MM123$dataset <- "MM123"; MM124$dataset <- "MM124"; MM51$dataset <- "MM51"; MM54$dataset <- "MM54"; MM55$dataset <- "MM55"; MM56$dataset <- "MM56"; MM57$dataset <- "MM57"; MM59$dataset <- "MM59"; MM60$dataset <- "MM60"; MM61$dataset <- "MM61"; MM77$dataset <- "MM77"; MM78$dataset <- "MM78"; MM79$dataset <- "MM79"; MM80$dataset <- "MM80"; MM81$dataset <- "MM81"; MM86$dataset <- "MM86"; MM87$dataset <- "MM87"; MM88$dataset <- "MM88"; MM89$dataset <- "MM89"; MM93$dataset <- "MM93"; MM94$dataset <- "MM94"; MM95$dataset <- "MM95"; MM96$dataset <- "MM96"; MM97$dataset <- "MM97"; MM98$dataset <- "MM98"; JYH792$dataset <- "JYH792"; JYH809$dataset <- "JYH809"; MM108$dataset <- "MM108"; MM109$dataset <- "MM109"; MM110$dataset <- "MM110"; MM12$dataset <- "MM12"
+```
+
+```{r}
+data <- merge(
+  x = MM120,
+  y = list(MM121, MM122, MM123, MM124, MM51, MM54, MM55, MM56, MM57, MM59, MM60, MM61, MM77, MM78, MM79, MM80, MM81, MM86, MM87, MM88, MM89, MM93, MM94, MM95, MM96, MM97, MM98, JYH792, JYH809, MM108, MM109, MM110, MM12),
+  add.cell.ids = c("MM120", "MM121", "MM122", "MM123", "MM124", "MM51", "MM54", "MM55", "MM56", "MM57", "MM59", "MM60", "MM61", "MM77", "MM78", "MM79", "MM80", "MM81", "MM86", "MM87", "MM88", "MM89", "MM93", "MM94", "MM95", "MM96", "MM97", "MM98", "JYH792", "JYH809", "MM108", "MM109", "MM110", "MM12")
+)
+data[[]]
+```
+
+```{r}
+mat <- GetAssayData(object = data, assay = "peaks", layer = "counts")
+
+writeMM(mat, "raw_counts.mtx")
+writeLines(rownames(mat), 'raw_peaks.txt')
+writeLines(colnames(mat), 'raw_cells.txt')
+```
+
+harmony
+```{r}
+data <- FindVariableFeatures(data, selection.method = "vst", nfeatures = 2000)
+
+features <- rownames(data)
+data <- ScaleData(data, features = features)
+
+data <- RunPCA(data)
+
+data <- RunUMAP(object = data, reduction = 'lsi', dims = 2:30)
+data <- FindNeighbors(object = data, reduction = 'lsi', dims = 2:30)
+data <- FindClusters(object = data, verbose = FALSE, algorithm = 3, resolution = .2)
+DimPlot(object = data, label = TRUE) + NoLegend()
+
+DimPlot(object = data, group.by = "dataset") + NoLegend()
+
+data <- RunHarmony(object = data, group.by.vars = 'dataset', assay.use = 'peaks', project.dim = FALSE)
+data <- RunUMAP(data, dims = 2:30, reduction = 'harmony')
+DimPlot(data, group.by = 'dataset', pt.size = 0.1)
+```
+
+```{r}
+CoveragePlot(data, region = c('INS', 'GCG', 'SST', 'PPY'), assay = 'peaks')
+```
+
+
+```{r}
+DefaultAssay(data) <- 'peaks'
+
+cell_types <- c('alpha', 'beta', 'beta', 'delta', 'beta', 'beta', 'acinar', 'beta', 'ab', 'ab', 'ab', 'alpha', 'connective', 'beta', '?', '?', 'alpha', 'alpha', 'beta', rep('?', 38))
+names(cell_types) <- levels(data)
+
+data <- RenameIdents(object = data, cell_types)
+
+da_peaks <- FindMarkers(
+  object = data,
+  ident.1 = 'alpha',
+  ident.2 = 'beta',
+  test.use = 'LR',
+  latent.vars = 'nCount_peaks'
+)
+
+head(da_peaks)
+```
+
+```{r}
+da_peaks$closest_gene <- ClosestFeature(data, regions = rownames(da_peaks))$gene_name
+da_peaks$distance <- ClosestFeature(data, regions = rownames(da_peaks))$distance
+da_peaks
+```
+
+```{r}
+CoveragePlot(
+  object = data,
+  region = rownames(da_peaks)[2],
+  extend.upstream = 10000,
+  extend.downstream = 5000,
+  group.by = "dataset"
+)
+```
+
+```{r}
+plot1 <- VlnPlot(
+  object = data,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1,
+  idents = c("alpha", "beta")
+)
+plot2 <- FeaturePlot(
+  object = data,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1
+)
+
+plot1 | plot2
+```
+
+```{r}
+#SaveH5Seurat(data, filename = "merged.h5Seurat")
+#data <- LoadH5Seurat("gene_activity2.h5Seurat")
+Convert("raw_merged.h5Seurat", dest = "h5ad")
+```

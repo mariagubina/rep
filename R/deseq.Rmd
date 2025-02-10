@@ -1,0 +1,120 @@
+---
+title: "DESeq"
+output: html_document
+date: "2024-12-18"
+---
+
+```{r}
+wd = "/media/leon/DISK2/icig/done/results/alignments"
+```
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("MotifDb")
+BiocManager::install("WGCNA")
+BiocManager::install("Rsubread")
+BiocManager::install("DESeq2")
+BiocManager::install("apeglm")
+BiocManager::install("clusterProfiler")
+BiocManager::install("AnnotationDbi")
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("biomaRt")
+
+install.packages("devtools")
+install.packages("tidyverse")
+```
+
+```{r}
+library(Rsubread)
+library(apeglm)
+library(tidyverse)
+library(magrittr)
+library(WGCNA)
+library(AnnotationDbi)
+library(DESeq2)
+library(devtools)
+library(RColorBrewer)
+library(dplyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(biomaRt)
+```
+
+
+```{r}
+counts <- read.table("/media/leon/DISK2/icig/done/in_vivo_counts.tsv", header = TRUE, row.names = 1, sep = "\t")
+counts
+```
+
+
+```{r}
+coldata <- read.csv("/media/leon/DISK2/icig/done/in_vivo_coldata.csv", header = TRUE, row.names = 1)
+coldata <- coldata[colnames(counts), ]
+coldata$sample <- factor(coldata$sample)
+coldata$time <- factor(coldata$time)
+coldata
+```
+
+```{r}
+all(colnames(counts) == rownames(coldata))
+```
+
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = coldata,
+                              design = ~time)
+dds <- DESeq(dds)
+res <- results(dds)
+```
+
+
+```{r}
+head(res[order(res$padj), ])
+```
+
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+```
+
+
+```{r}
+plotPCA(vsd, intgroup=c("time"))
+```
+
+```{r}
+plotPCA(vsd, intgroup=c("sample"))
+```
+
+
+```{r}
+plotMA(res)
+```
+
+
+```{r}
+resLFC <- lfcShrink(dds, coef="time_1_vs_0", type="apeglm")
+```
+
+
+```{r}
+plotMA(resLFC)
+```
+
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = coldata,
+                              design = ~time+sample)
+dds <- DESeq(dds)
+```
+
+
+```{r}
+res <- results(dds)
+plotMA(res)
+```

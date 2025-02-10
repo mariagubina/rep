@@ -1,0 +1,387 @@
+---
+title: "WGCNA"
+output: html_document
+date: "2024-12-25"
+---
+
+```{r}
+wd = "/media/leon/DISK2/icig/done/results_2/alignments"
+```
+
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("clusterProfiler")
+BiocManager::install("WGCNA")
+BiocManager::install("Rsubread")
+BiocManager::install("DESeq2")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(Rsubread)
+library(tidyverse)
+library(magrittr)
+library(WGCNA)
+library(DESeq2)
+library(plyr)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+
+allowWGCNAThreads()
+```
+
+
+```{r}
+counts <- read.table("/media/leon/DISK2/icig/done/in_vivo_counts.tsv", header = TRUE, row.names = 1, sep = "\t")
+counts
+```
+
+
+```{r}
+coldata <- read.csv("/media/leon/DISK2/icig/done/in_vivo_coldata.csv", header = TRUE, row.names = 1)
+coldata <- coldata[colnames(counts), ]
+coldata$sample <- factor(coldata$sample)
+coldata$time <- factor(coldata$time)
+coldata
+```
+
+
+```{r}
+# Create DESeq2 dataset
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = coldata,
+                              design = ~time)
+dds <- DESeq(dds)
+```
+
+
+```{r}
+# Perform variance stabilization and filter genes based on variance
+wpn_vsd <- getVarianceStabilizedData(dds)
+rv_wpn <- rowVars(wpn_vsd)
+summary(rv_wpn) # View variance distribution
+```
+
+
+```{r}
+# Filter top 5% variable genes
+# q75_wpn <- quantile(rv_wpn, .75)  # <= original
+q95_wpn <- quantile(rv_wpn, .95)  # <= changed to 95 quantile to reduce dataset
+expr_normalized <- wpn_vsd[rv_wpn > q95_wpn, ]
+
+# Visualize normalized expression data
+expr_normalized_df <- data.frame(expr_normalized) %>%
+  mutate(Gene_id = row.names(expr_normalized)) %>%
+  pivot_longer(-Gene_id)
+
+expr_normalized_df %>%
+  ggplot(aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+```
+
+
+```{r}
+# Prepare input for WGCNA
+input_mat <- t(expr_normalized)
+input_mat[1:5, 1:5]
+```
+
+
+```{r}
+# Pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+
+# Call the network topology analysis function
+sft = pickSoftThreshold(
+  input_mat,
+  # blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+```
+
+
+```{r}
+# Visualize soft threshold selection
+par(mfrow = c(1, 2))
+cex1 = 0.8
+plot(sft$fitIndices[, 1],
+  -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  xlab = "Soft Threshold (power)",
+  ylab = "Scale Free Topology Model Fit, signed R^2",
+  main = "Scale independence"
+)
+abline(h = 0.8, col = "red")
+
+text(sft$fitIndices[, 1],
+  -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  labels = powers, cex = cex1, col = "red"
+)
+plot(sft$fitIndices[, 1],
+  sft$fitIndices[, 5],
+  xlab = "Soft Threshold (power)",
+  ylab = "Mean Connectivity",
+  type = "n",
+  main = "Mean connectivity"
+)
+
+text(sft$fitIndices[, 1],
+  sft$fitIndices[, 5],
+  labels = powers,
+  cex = cex1, col = "red"
+)
+```
+
+```{r}
+# Choose power based on plots
+picked_power = 5
+
+temp_cor <- cor           # Base R function
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+
+netwk <- blockwiseModules(input_mat,
+            # == Adjacency Function ==
+            power = picked_power,     # <= power here
+            networkType = "signed",
+            
+            # == Tree and Block Options ==
+            deepSplit = 2,
+            pamRespectsDendro = F,
+           # detectCutHeight = 0.75,  # default is 0.995
+            minModuleSize = 30,
+            maxBlockSize = 4000,
+           
+            # == Module Adjustments ==
+            reassignThreshold = 0,
+            mergeCutHeight = 0.25,
+           
+            # == TOM == Archive the run results in TOM file (saves time)
+            saveTOMs = T,
+            saveTOMFileBase = "ER",
+           
+            # == Output Options
+            numericLabels = T,
+            verbose = 3)
+
+cor <- temp_cor     # Return cor function to original namespace
+```
+
+
+```{r}
+# Convert labels to colors for plotting
+mergedColors <- labels2colors(netwk$colors)
+
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(
+  netwk$dendrograms[[1]],
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05
+)
+```
+
+
+```{r}
+# Create module data frame
+module_df <- data.frame(
+  gene_id = names(netwk$colors),
+  colors = mergedColors
+)
+module_df
+```
+
+```{r}
+# Check module sizes
+module_sizes <- table(module_df$colors)
+module_sizes
+```
+
+```{r}
+barplot(module_sizes,
+        main = "Module Size",
+        xlab = "Modules",
+        ylab = "Number of Genes",
+        col = "lightblue",
+        las = 2)
+
+```
+
+```{r}
+module_sizes_df <- ddply(module_df, .(colors), summarize, GeneCount = length(colors))
+
+# Построение графика Module Size в виде цветных пятен
+ggplot(module_sizes_df, aes(y = colors, x = GeneCount, color = colors)) +
+  geom_point(size = 4) +
+  scale_color_identity() +
+  theme_minimal() +
+  labs(title = "Module Size in WGCNA",
+       y = "Modules",
+       x = "Number of Genes") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+# Get Module Eigengenes per cluster
+MEs0 <- moduleEigengenes(input_mat, mergedColors)$eigengenes
+
+# Reorder modules so similar modules are next to each other
+MEs0 <- orderMEs(MEs0)
+module_order = names(MEs0) %>% gsub("ME", "", .)
+
+# Add treatment information and reshape for visualization
+MEs0$treatment <- gsub("RNASEQ_", "", row.names(MEs0))
+MEs0$treatment <- gsub("R.bam", "", MEs0$treatment)
+
+mME = MEs0 %>%
+  pivot_longer(-treatment) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order)
+  )
+mME$treatment <- gsub("(s\\d+)_([0-9]+)", "\\2_\\1", mME$treatment)
+
+mME %>% ggplot(., aes(x=treatment, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+```
+
+
+```{r}
+mME$treatment <- sub("(.*)_.*", "\\1", mME$treatment)
+mME %>% ggplot(., aes(x=treatment, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill = "corr")
+```
+
+```{r}
+# clinical_data <- data.frame(
+#  Sample = colnames(dds),
+#  Timepoint = gsub("SSP_850_1_RNASEQ_s\\d+_", "", colnames(dds))
+# )
+# rownames(clinical_data) <- clinical_data$Sample
+
+# Создание матрицы для корреляции между модулями и клиническими данными
+# trait_data <- data.frame(
+#   Timepoint = clinical_data$Timepoint,
+#   Response = clinical_data$Response
+# )
+```
+
+
+```{r}
+GO <- data.frame()
+KEGG <- data.frame()
+
+# Вычисление корреляции
+for (i in unique(mME$name)) {
+  
+  colr = "turquoise"   # Select module color
+  
+  # Преобразование Ensembl ID в Entrez ID
+  gene_dataframe <- bitr(
+    module_df[module_df$colors == colr, ]$gene_id,
+    fromType = "ENSEMBL",
+    toType = "ENTREZID",
+    OrgDb = "org.Hs.eg.db"
+  )
+  # Извлечение Entrez ID
+  entrez_genes <- gene_dataframe$ENTREZID
+  entrez_genes
+  
+  # KEGG enrichment
+  kegg_enrich <- enrichKEGG(gene = entrez_genes,
+                            organism = "hsa",  # для человека
+                            pAdjustMethod = "BH",
+                            qvalueCutoff = 0.1)
+  # Результаты обогащения
+  print(i)
+  print(head(as.data.frame(kegg_enrich)))
+  if (length(kegg_enrich$Count) > 0) {
+    KEGG <- rbind(KEGG, cbind(as.data.frame(kegg_enrich), color = i))
+  }
+  
+  # GO enrichment
+  go_enrich <- enrichGO(gene = entrez_genes,
+                        OrgDb = org.Hs.eg.db,
+                        keyType = "ENTREZID",
+                        ont = "BP",  # Biolgical Process, можно использовать "CC" или "MF"
+                        pAdjustMethod = "BH",
+                        qvalueCutoff = 0.1,
+                        readable = TRUE)
+  
+  print(head(as.data.frame(go_enrich)))
+  # Add treatment names
+  if (length(go_enrich$Count) > 0) {
+    GO <- rbind(GO, cbind(as.data.frame(go_enrich), color = i))
+  }
+}
+```
+
+
+```{r}
+# Visualize enrichment results
+dotplot(kegg_enrich, showCategory = 10) +
+  ggtitle(paste0("KEGG Enrichment Analysis ", colr))
+
+dotplot(go_enrich, showCategory = 10) +
+  ggtitle(paste0("GO Enrichment Analysis ", colr))
+```
+
+
+```{r}
+go_enrich <- enrichGO(gene = entrez_genes,
+                      OrgDb = org.Hs.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "BP",  # Biological Process, можно использовать "CC" или "MF"
+                      pAdjustMethod = "BH",
+                      qvalueCutoff = 0.01,
+                      readable = TRUE)
+
+head(as.data.frame(go_enrich))
+```
+
+
+```{r}
+MEs0_numeric <- MEs0[, -ncol(MEs0)]  # Remove the 'treatment' column
+
+kME <- signedKME(t(expr_normalized), MEs0_numeric)
+# kME <- signedKME(data, module_df)
+```
+
+
+```{r}
+cnetplot(kegg_enrich, foldChange = 2, showCategory = 10) +
+  ggtitle("Network of KEGG Pathways")
+```
