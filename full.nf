@@ -1,9 +1,9 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl = 2
 
-params.genome_fa     = '/media/leon/Polina/Genomes/hg38.chromFa/hg38.fa'
+params.bowtie_fa     = '/media/leon/Polina/Genomes/hg38.chromFa/hg38.fa'
 params.bowtie_index  = '/media/leon/Polina/Genomes/hg38.chromFa/hg38'
-params.hisat_fa      = '/media/leon/Polina/Genomes/hg38.chromFa/hg38_FOR_HISAT_OUTPUT.fa'
+params.hisat_fa      = '/media/leon/Polina/Genomes/hg38.chromFa/hg38_FOR_HISAT.fa'
 params.hisat_index   = '/media/leon/DISK2/icig/grch38_snp_tran/genome_snp_tran'
 params.metadata      = 'metadata.csv'
 params.reads         = 'data/*{1,2}.fq.gz'
@@ -18,7 +18,7 @@ params.gtf           = '/media/leon/DISK2/icig/Homo_sapiens.GRCh38.113.gtf'
 
 
 process FASTQC {
-    // дописать maxForks и тд
+    // maxForks
     publishDir "${params.outdir}/QC", mode: 'copy'
 
     input:
@@ -34,41 +34,47 @@ process FASTQC {
 }
 
 process PREPROCESS {
-    publishDir "${params.outdir}/trimmed"
+    maxForks 8
+    cpus 4
+    memory '4GB'
+    publishDir "${params.outdir}/trimmed", pattern: "*.fastq.gz"
+    publishDir "${params.outdir}/trimmed/fastp_reports", pattern: "*.{html,json}"
     
     input:
     tuple val(sample), path(fastqs), val(assay_type)
     
     output:
-    tuple val(sample), path("*.trimmed.fastq.gz"), emit: reads
-    path("*.json"), emit: json // можно в один канал
-    path("*.html"), emit: html
+    tuple val(sample), path("*.trimmed.fastq.gz"), val(assay_type), emit: reads
+    tuple path("*.json"), path("*.html"), emit: reports
     
     script:
     if (assay_type == "ATAC" || assay_type == "mmATAC") {
-        def umi_skip = assay_type == "mmATAC" ? "--umi_skip 8" : ""
-        
         """
+        umi_skip=""
+        if [ ${assay_type} == "mmATAC" ]; then
+            umi_skip="--umi_skip 8"
+        fi
+
         ## Attaching barcodes to forward read headers
-        fastp -i ${fastqs[0]} -I ${fastqs[1]} \
-            -o ${sample}_1.barcoded.fastq.gz -O tmp.fq.gz \
-            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \
-            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \ # почему здесь один бэкслэш а в других процессах два
+        fastp -i ${fastqs[0]} -I ${fastqs[1]} \\
+            -o ${sample}_1.barcoded.fastq.gz -O tmp.fq.gz \\
+            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \\
+            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \\
             --thread ${task.cpus}
         
         ## Attaching barcodes to reverse read headers
-        fastp -i ${fastqs[2]} -I ${fastqs[1]} \
-            -o ${sample}_2.barcoded.fastq.gz -O tmp.fq.gz \
-            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \
-            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \
+        fastp -i ${fastqs[2]} -I ${fastqs[1]} \\
+            -o ${sample}_2.barcoded.fastq.gz -O tmp.fq.gz \\
+            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \\
+            --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \\
             --thread ${task.cpus}
         
         ## Trimming adapters and filtering
-        fastp -i ${sample}_1.barcoded.fastq.gz -I ${sample}_2.barcoded.fastq.gz \
-            -o ${sample}_1.trimmed.fastq.gz -O ${sample}_2.trimmed.fastq.gz \
-            --length_required 36 --trim_poly_g \
-            --adapter_fasta ${params.atac_adapters} \
-            --thread ${task.cpus} \
+        fastp -i ${sample}_1.barcoded.fastq.gz -I ${sample}_2.barcoded.fastq.gz \\
+            -o ${sample}_1.trimmed.fastq.gz -O ${sample}_2.trimmed.fastq.gz \\
+            --length_required 36 --trim_poly_g \\
+            --adapter_fasta ${params.atac_adapters} \\
+            --thread ${task.cpus} \\
             -j ${sample}.fastp.json -h ${sample}.fastp.html
         
         ## Removing intermediate files
@@ -76,25 +82,25 @@ process PREPROCESS {
         """
     } else if (assay_type == "mmRNA") {
         """
-        fastp \
-            -i ${fastqs[0]} -I ${fastqs[1]} \
-            -o ${sample}_1.trimmed.fastq.gz -O ${sample}.trimmed.fastq.gz \
-            --umi --umi_loc=read1 --umi_len=16 --umi_prefix=CR \
-            --length_required 36 --trim_poly_g \
-            -a AAGCAGTGGTATCAACGCAGAGTAC \ # сделать mmRNA_adapter параметром
-            --thread ${task.cpus} \
+        fastp \\
+            -i ${fastqs[0]} -I ${fastqs[1]} \\
+            -o ${sample}_1.trimmed.fastq.gz -O ${sample}.trimmed.fastq.gz \\
+            --umi --umi_loc=read1 --umi_len=16 --umi_prefix=CR \\
+            --length_required 36 --trim_poly_g \\
+            -a AAGCAGTGGTATCAACGCAGAGTAC \\ # сделать mmRNA_adapter параметром
+            --thread ${task.cpus} \\
             -j ${sample}.json -h ${sample}.html  
         
         rm ${sample}_1.trimmed.fastq.gz
         """
     } else {
         """
-        fastp \
-            -i ${fastqs[0]} -I ${fastqs[1]} \
-            -o ${sample}_1.trimmed.fq.gz -O ${sample}_2.trimmed.fq.gz \
-            --detect_adapter_for_pe --trim_poly_g \
-            --thread ${task.cpus} \
-            --length_required 36 \
+        fastp \\
+            -i ${fastqs[0]} -I ${fastqs[1]} \\
+            -o ${sample}_1.trimmed.fastq.gz -O ${sample}_2.trimmed.fastq.gz \\
+            --detect_adapter_for_pe --trim_poly_g \\
+            --thread ${task.cpus} \\
+            --length_required 36 \\
             -j ${sample}.fastp.json -h ${sample}.fastp.html
         """
     }
@@ -102,7 +108,7 @@ process PREPROCESS {
 
 process HISAT2 {
     cpus 30
-    memory '30GB' // нужно ли ставить ограничение на ram и cpu
+    memory '30GB'
     maxForks 1    
     publishDir "${params.outdir}/alignments"
 
@@ -130,7 +136,8 @@ process HISAT2 {
 }
 
 process FEATURE_COUNTS {
-    publishDir "${params.outdir}/counts", mode: 'move'
+    cpus 20
+    publishDir "${params.outdir}/counts", mode: 'copy'
 
     input:
     path(alignments)
@@ -287,7 +294,7 @@ process BOWTIE2_alt {
 }
 
 // файлы с баркодами лучше считывать в воркфлоу и передавать как path
-// сделать паттерн для аутдир чтобы раскидывать по папкам ref и alt (??)
+// сделать паттерн для аутдир чтобы раскидывать по папкам ref и alt (?)
 process DEMULTIPLEX_BAM {
     publishDir "${params.outdir}/sc_alignments"
 
