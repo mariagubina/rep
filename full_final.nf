@@ -376,6 +376,66 @@ process FINISH {
     """
 }
 
+process CORRECT_BARCODES {
+    publishDir "/media/leon/Polina/atac_rna/bc_corrected", mode: 'move'
+
+    input:
+    tuple path(fastq_file), val(assay_type)
+
+    output:
+    path("*.txt")
+
+    script:
+    """
+    correct_barcode.R --barcode_file=${fastq_file} --assay_type=${assay_type}
+    """
+}
+
+workflow {
+    // Parsing the metadata table
+    patient_dct = Channel.fromPath(params.metadata)
+        .splitCsv(header: true)
+        .map { row -> tuple(row.sample, row.patient) }
+    
+    // ATAC-seq
+    ATAC_fastqs = Channel.of(50..83) // считывать sample_ids из таблицы с метадатой и искать в директории указанной в параметрах
+        .map { n -> "SRR140487${n}" }
+        .map { sample ->
+            def fastq_f = "${params.atac_dir}/${sample}/${sample}_S1_L001_R1_001.fastq.gz"
+            def fastq_b = "${params.atac_dir}/${sample}/${sample}_S1_L001_R2_001.fastq.gz"
+            def fastq_r = "${params.atac_dir}/${sample}/${sample}_S1_L001_R3_001.fastq.gz"
+        
+            return [sample, [fastq_f, fastq_b, fastq_r], "ATAC"]
+    }
+    
+    // Multiome ATAC-seq
+    mmATAC_fastqs = Channel.of(351..398, 407..416)
+        .map { n -> "SRR18593${n}" }
+        .map { sample ->
+            def fastq_f = "${params.mm_dir}/${sample}_1.fastq.gz"
+            def fastq_b = "${params.mm_dir}/${sample}_2.fastq.gz"
+            def fastq_r = "${params.mm_dir}/${sample}_3.fastq.gz"
+
+            return [sample, [fastq_f, fastq_b, fastq_r], "mmATAC"]
+        }
+
+    // Multiome RNA-seq
+    mmRNA_fastqs = Channel.of(339..350, 399..406)
+        .map { n -> "SRR18593${n}" }
+        .map { sample -> 
+            def fastq_f = "${params.mm_dir}/${sample}_1.fastq.gz"
+            def fastq_r = "${params.mm_dir}/${sample}_2.fastq.gz"
+
+            return [sample, [fastq_f, fastq_r], "mmRNA"]
+        }
+
+    bc_correction_input = ATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] }
+        .concat(mmATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] })
+        .concat(mmRNA_fastqs.map { it -> it.flatten() }.map { it -> [it[1], it[3]] })
+        
+    CORRECT_BARCODES(bc_correction_input)
+}
+
 workflow rSNPs {
     // Parsing the metadata table
     patient_dct = Channel.fromPath(params.metadata)
@@ -413,6 +473,12 @@ workflow rSNPs {
 
             return [sample, [fastq_f, fastq_r], "mmRNA"]
         }
+
+    bc_correction_input = ATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] }
+        .concat(mmATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] })
+        .concat(mmRNA_fastqs.map { it -> it.flatten() }.map { it -> [it[1], it[3]] })
+        .view()
+    CORRECT_BARCODES(bc_correction_input)
 
     // Preprocessing
     all_fastqs = ATAC_fastqs.concat(mmATAC_fastqs).concat(mmRNA_fastqs)
@@ -483,7 +549,7 @@ workflow asymmetry_shift {
     FEATURE_COUNTS(rna_alignments)
 }
 
-workflow {
+workflow to_uncomment {
     rSNPs()
     // asymmetry_shift()
 }
