@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 
 my ($patient, $bam_file, $genome) = @ARGV;
-open(my $IN, "-|", "samtools view -q 20 -b $file | bcftools mpileup -d 10000 -f ${genome} -");
+open(my $IN, "-|", "samtools view -q 20 -b $bam_file | bcftools mpileup -d 10000 -f $genome -");
 $vcf_file = "${patient}.vcf";
 
 open(my $OUT, ">", $vcf_file);
