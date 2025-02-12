@@ -166,7 +166,7 @@ process GET_STATS {
 
     script:
     """
-    stats.pl ${sample} ${bam_file} ${params.genome_fa}
+    stats.pl ${sample} ${bam_file} ${params.hisat_fa}
     """
 }
 
@@ -246,7 +246,7 @@ process SNP_CALL {
 
     script:
     """
-    snp_call.pl ${patient} ${merged_bam} ${params.genome_fa}
+    snp_call.pl ${patient} ${merged_bam} ${params.bowtie_fa}
     """
 }
 
@@ -262,7 +262,7 @@ process ALT_GENOME {
     script:
     """
     mkdir ${patient}
-    change_genome.pl ${patient} ${merged_vcf} ${params.genome_fa}
+    change_genome.pl ${patient} ${merged_vcf} ${params.bowtie_fa}
     bowtie2-build --threads ${task.cpus} ${patient}/${patient}.fa ${patient}
     """
 }
