@@ -18,7 +18,6 @@ params.gtf           = '/media/leon/DISK2/icig/Homo_sapiens.GRCh38.113.gtf'
 
 
 process FASTQC {
-    // maxForks
     publishDir "${params.outdir}/QC", mode: 'copy'
 
     input:
@@ -212,7 +211,6 @@ process BOWTIE2 {
     """
 }
 
-// прописать условие если длина кортежа 1 то создать симлинк?
 process MERGE_BAMS {
     publishDir "${params.outdir}/merged"
 
@@ -225,13 +223,13 @@ process MERGE_BAMS {
 
     script:
     """
-    # if [[ " MM120 MM121 MM124 MM54 MM56 MM57 MM79 MM80 MM81 MM86 MM94 JYH792 JYH809 MM12 " =~ " ${patient} " ]]; then
-    #     ln -s ${bams} ${patient}.bam
-    #     samtools index -@ ${task.cpus} ${patient}.bam
-    # else
+    if [[ " MM120 MM121 MM124 MM54 MM56 MM57 MM79 MM80 MM81 MM86 MM94 JYH792 JYH809 MM12 " =~ " ${patient} " ]]; then
+        ln -s ${bams} ${patient}.bam
+        samtools index -@ ${task.cpus} ${patient}.bam
+    else
         samtools merge -@ ${task.cpus} ${patient}.bam ${bams}
         samtools index -@ ${task.cpus} ${patient}.bam
-    # fi
+    fi
     """
 }
 
@@ -293,8 +291,6 @@ process BOWTIE2_alt {
     """
 }
 
-// файлы с баркодами лучше считывать в воркфлоу и передавать как path
-// сделать паттерн для аутдир чтобы раскидывать по папкам ref и alt (?)
 process DEMULTIPLEX_BAM {
     publishDir "${params.outdir}/sc_alignments"
 
@@ -543,13 +539,13 @@ workflow asymmetry_shift {
     }
     .set { assay }
 
-    rna_alignments = assay.rna.map { sample, bam_path, assay_type -> bam_path }.collect() // почему здесь collect а сверху groupTuple
-    // chip_alignments = assay.chip.map { sample, bam_path, assay_type -> bam_path }.collect()
+    rna_alignments = assay.rna.map { sample, bam_path, assay_type -> bam_path }.collect()
+    chip_alignments = assay.chip.map { sample, bam_path, assay_type -> bam_path }.collect()
     
     FEATURE_COUNTS(rna_alignments)
 }
 
-workflow to_uncomment {
-    rSNPs()
-    // asymmetry_shift()
+workflow {
+    // rSNPs()
+    asymmetry_shift()
 }
