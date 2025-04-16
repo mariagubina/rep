@@ -1,4 +1,4 @@
-name: singlecell
+name: AS_SNPs
 channels:
   - conda-forge
   - bioconda
