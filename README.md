@@ -13,7 +13,7 @@ This repository contains a reproducible pipeline for detecting allele-specific S
 - Conda (https://anaconda.org/anaconda/conda)
 - Reference genome (FASTA)
 - HISAT2 genome index (GRCh38, genome_snp_tran)
-- Metadata table
+- Metadata in CSV format
 
 ---
 
