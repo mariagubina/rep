@@ -20,8 +20,8 @@ This repository contains a reproducible pipeline for detecting allele-specific S
 ## Installation
 
 ```bash
-git clone https://github.com/mariagubina/rsnps
-cd rsnps
+git clone https://github.com/mariagubina/rep
+cd rep
 ```
 
 ---
