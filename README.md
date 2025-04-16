@@ -1,4 +1,4 @@
-# Allele-specific binding & expression Nextflow pipeline
+# Nextflow pipeline for detecting changes in allele-specific binding & expression events
 
 This repository contains a reproducible pipeline for detecting allele-specific SNPs in RNA-seq, ChIP-seq, or ATAC-seq data. It includes two workflows:
 
