@@ -45,6 +45,7 @@ nextflow run pipeline.nf \
 nextflow run pipeline.nf \
   --mode asymmetry \
   --fasta <genome.fa> \
+  --metadata <metadata.csv> \
   -profile conda
 ```
 
