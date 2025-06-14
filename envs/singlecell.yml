@@ -1,4 +1,4 @@
-name: singlecell
+name: AS_SNPs
 channels:
   - conda-forge
   - bioconda
@@ -13,3 +13,5 @@ dependencies:
   - conda-forge::perl=5.32.1
   - bioconda::hisat2=2.2.1
   - bioconda::subread=2.0.1
+  - conda-forge::r-base=4.4.3
+  - conda-forge::r-remotes=2.5.0
