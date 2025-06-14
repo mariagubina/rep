@@ -50,6 +50,7 @@ process PREPROCESS {
     script:
     if (assay_type == "ATAC" || assay_type == "mmATAC") {
         """
+        ## Skip library barcode in index read for multiome ATAC-seq
         umi_skip=""
         if [ ${assay_type} == "mmATAC" ]; then
             umi_skip="--umi_skip 8"
@@ -58,14 +59,14 @@ process PREPROCESS {
         ## Attaching barcodes to forward read headers
         fastp -i ${fastqs[0]} -I ${fastqs[1]} \\
             -o ${sample}_1.barcoded.fastq.gz -O tmp.fq.gz \\
-            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \\
+            --umi --umi_loc=read2 \${umi_skip} --umi_len=16 --umi_prefix=CR \\
             --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \\
             --thread ${task.cpus}
         
         ## Attaching barcodes to reverse read headers
         fastp -i ${fastqs[2]} -I ${fastqs[1]} \\
             -o ${sample}_2.barcoded.fastq.gz -O tmp.fq.gz \\
-            --umi --umi_loc=read2 ${umi_skip} --umi_len=16 --umi_prefix=CR \\
+            --umi --umi_loc=read2 \${umi_skip} --umi_len=16 --umi_prefix=CR \\
             --disable_length_filtering --disable_adapter_trimming --disable_quality_filtering \\
             --thread ${task.cpus}
         
@@ -121,7 +122,7 @@ process HISAT2 {
 
     script:
     """
-    splicing_mode="--no-spliced-alignment" # пусть лучше условие будет вне кавычек (?)
+    splicing_mode="--no-spliced-alignment"
     if [ ${assay_type} == "RNASEQ" ]; then
         splicing_mode=""
     fi
@@ -303,7 +304,7 @@ process DEMULTIPLEX_BAM {
 
     output:
     path("*.bam"), emit: bam
-    tuple path("*.bai"), emit: bai
+    path("*.bai"), emit: bai
 
     script:
     """
@@ -320,9 +321,8 @@ process DEMULTIPLEX_BAM {
         samtools view ${bam_file} | LC_ALL=C grep -F -f \$i > filtered_SAM_body
         cat SAM_header filtered_SAM_body | samtools view -b > \${subsample}.bam
         rm SAM_header filtered_SAM_body
+        samtools index -@ ${task.cpus} \${subsample}.bam
     done
-
-    samtools index -@ ${task.cpus} \${subsample}.bam
     """
 }
 
@@ -391,50 +391,6 @@ process CORRECT_BARCODES {
     """
 }
 
-workflow {
-    // Parsing the metadata table
-    patient_dct = Channel.fromPath(params.metadata)
-        .splitCsv(header: true)
-        .map { row -> tuple(row.sample, row.patient) }
-    
-    // ATAC-seq
-    ATAC_fastqs = Channel.of(50..83) // считывать sample_ids из таблицы с метадатой и искать в директории указанной в параметрах
-        .map { n -> "SRR140487${n}" }
-        .map { sample ->
-            def fastq_f = "${params.atac_dir}/${sample}/${sample}_S1_L001_R1_001.fastq.gz"
-            def fastq_b = "${params.atac_dir}/${sample}/${sample}_S1_L001_R2_001.fastq.gz"
-            def fastq_r = "${params.atac_dir}/${sample}/${sample}_S1_L001_R3_001.fastq.gz"
-        
-            return [sample, [fastq_f, fastq_b, fastq_r], "ATAC"]
-    }
-    
-    // Multiome ATAC-seq
-    mmATAC_fastqs = Channel.of(351..398, 407..416)
-        .map { n -> "SRR18593${n}" }
-        .map { sample ->
-            def fastq_f = "${params.mm_dir}/${sample}_1.fastq.gz"
-            def fastq_b = "${params.mm_dir}/${sample}_2.fastq.gz"
-            def fastq_r = "${params.mm_dir}/${sample}_3.fastq.gz"
-
-            return [sample, [fastq_f, fastq_b, fastq_r], "mmATAC"]
-        }
-
-    // Multiome RNA-seq
-    mmRNA_fastqs = Channel.of(339..350, 399..406)
-        .map { n -> "SRR18593${n}" }
-        .map { sample -> 
-            def fastq_f = "${params.mm_dir}/${sample}_1.fastq.gz"
-            def fastq_r = "${params.mm_dir}/${sample}_2.fastq.gz"
-
-            return [sample, [fastq_f, fastq_r], "mmRNA"]
-        }
-
-    bc_correction_input = ATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] }
-        .concat(mmATAC_fastqs.map { it -> it.flatten() }.map { it -> [it[2], it[4]] })
-        .concat(mmRNA_fastqs.map { it -> it.flatten() }.map { it -> [it[1], it[3]] })
-        
-    CORRECT_BARCODES(bc_correction_input)
-}
 
 workflow rSNPs {
     // Parsing the metadata table
